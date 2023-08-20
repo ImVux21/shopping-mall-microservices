@@ -1,0 +1,167 @@
+version: '3'
+services:
+  # MySQL Docker Compose Configuration (Order Service)
+  mysql-db:
+    image: mysql
+    container_name: mysql-db
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: shopping-mall-db
+      MYSQL_USER: imvux21
+      MYSQL_PASSWORD: 02012002
+    volumes:
+      - ./mysql-data:/var/lib/mysql
+    restart: unless-stopped
+
+  # PostgresSQL Docker Compose Configuration (Inventory Service)
+  postgres-inventory:
+    image: postgres
+    container_name: postgres-inventory
+    environment:
+      PGPORT: 5432
+      POSTGRES_USER: imvux21
+      POSTGRES_PASSWORD: 02012002
+      POSTGRES_DB: inventory-service
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ./postgres-inventory-data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  # MongoDB Docker Compose Configuration (Product Service)
+  mongo-product:
+    image: mongo
+    container_name: mongo-product
+    volumes:
+      - ./mongo-product-data:/data/db
+    restart: unless-stopped
+
+  # KeyCloak Configuration (Authentication Service)
+  keycloak:
+    container_name: keycloak
+    image: quay.io/keycloak/keycloak:22.0.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_DB: mysql
+      KC_DB_URL: jdbc:mysql://mysql-db:3306/shopping-mall-db?createDatabaseIfNotExist=true
+      KC_DB_USERNAME: imvux21
+      KC_DB_PASSWORD: 02012002
+      KC_HOSTNAME: mysql-db
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: 02012002
+    ports:
+      - "8400:8888"
+    volumes:
+      - ./realms/:/opt/keycloak/data/import/
+    depends_on:
+        - mysql-db
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.3.0
+    hostname: zookeeper
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  broker:
+    image: confluentinc/cp-kafka:7.3.0
+    container_name: broker
+    ports:
+      - "9092:9092"
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: 'zookeeper:2181'
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_INTERNAL:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,PLAINTEXT_INTERNAL://broker:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+
+  # Zipkin Configuration
+  zipkin:
+    image: openzipkin/zipkin
+    container_name: zipkin
+    ports:
+      - "9411:9411"
+
+  # Eureka Server Configuration
+  discovery-server:
+    image: dodoanvu2002/discovery-server:latest
+    container_name: discovery-server
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    ports:
+      - "8761:8761"
+    depends_on:
+      - zipkin
+
+  # Gateway Configuration
+  api-gateway:
+    image: dodoanvu2002/api-gateway:latest
+    container_name: gateway
+    expose:
+      - "8080"
+    ports:
+      - "8080:8080"
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_SECURITY: TRACE
+    depends_on:
+      - zipkin
+      - discovery-server
+      - keycloak
+
+  # Product Service Configuration
+  product-service:
+    image: dodoanvu2002/product-service:latest
+    container_name: product-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    restart: on-failure
+    depends_on:
+      - mongo-product
+      - discovery-server
+      - api-gateway
+
+  # Order Service Configuration
+  order-service:
+    image: dodoanvu2002/order-service:latest
+    container_name: order-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+      SPRING_DATASOURCE_URL: jdbc:mysql://mysql-db:3306/shopping-mall-db?createDatabaseIfNotExist=true
+    restart: on-failure
+    depends_on:
+      - mysql-db
+      - broker
+      - zipkin
+      - discovery-server
+      - api-gateway
+
+  # Inventory Service Configuration
+  inventory-service:
+      image: dodoanvu2002/inventory-service:latest
+      container_name: inventory-service
+      environment:
+        SPRING_PROFILES_ACTIVE: docker
+        SPRING_DATASOURCE_URL: jdbc:postgresql://postgres-inventory:5432/inventory-service?createDatabaseIfNotExist=true
+      restart: on-failure
+      depends_on:
+        - postgres-inventory
+        - discovery-server
+        - api-gateway
+
+  # Notification Service Configuration
+  notification-service:
+    image: dodoanvu2002/notification-service:latest
+    container_name: notification-service
+    environment:
+      SPRING_PROFILES_ACTIVE: docker
+    restart: on-failure
+    depends_on:
+      - zipkin
+      - broker
+      - discovery-server
+      - api-gateway
